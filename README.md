@@ -96,3 +96,6 @@ SELECT * FROM daily_customer_metrics;
 
 Результат:
 https://disk.yandex.ru/d/E5dYRQcxGqTwUQ
+
+Airflow:
+https://disk.yandex.ru/i/Raytc3ddEoTC5w

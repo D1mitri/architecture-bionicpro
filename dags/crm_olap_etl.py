@@ -5,6 +5,7 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime, timedelta
 import pandas as pd
 from sqlalchemy import create_engine
+import csv
 
 default_args = {
     'owner': 'airflow',
@@ -12,6 +13,26 @@ default_args = {
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
+
+def generate_insert_queries():
+    CSV_FILE_PATH = 'sample_files/sample.csv'
+    with open( CSV_FILE_PATH, 'r') as csvfile:
+        csvreader = csv.reader(csvfile)
+
+        # Генерим запросы
+        insert_queries = []
+        is_header = True
+        for row in csvreader:
+            if is_header:
+                is_header = False
+                continue
+            insert_query = f"INSERT INTO bionicpro_table (id,order_number,mio_sensor_data,battery_level,user_id) VALUES ({row[0]}, {row[1]}, {row[2]},{row[3]},{row[4]});"
+            insert_queries.append(insert_query)
+
+        # Сохраняем запросы
+        with open('./dags/sql/insert_queries.sql', 'w') as f:
+            for query in insert_queries:
+                f.write(f"{query}\n")
 
 def extract_crm_data():
     crm_hook = PostgresHook(postgres_conn_id='crm_connection')
@@ -161,6 +182,32 @@ with DAG('crm_olap_etl_dag',
         task_id='create_olap_mart',
         python_callable=create_olap_mart
     )
+
+    create_table = PostgresOperator(
+                task_id='create_table',
+                postgres_conn_id='write_to_postgres',
+                sql="""
+                DROP TABLE IF EXISTS bionicpro_table;
+                CREATE TABLE bionicpro_table (
+                    id SERIAL PRIMARY KEY,
+                    order_number BIGINT,
+                    mio_sensor_data NUMERIC(18,2),
+                    battery_level NUMERIC(18,2),
+                    user_id BIGINT
+                );
+                """
+            )
+
+    generate_queries = PythonOperator(
+                task_id='generate_insert_queries',
+                python_callable=generate_insert_queries
+                )
+
+    run_insert_queries = PostgresOperator(
+                        task_id='run_insert_queries',
+                        postgres_conn_id='write_to_postgres',
+                        sql='sql/insert_queries.sql'
+                    )
     
     extract_crm = PythonOperator(
         task_id='extract_crm_data',
@@ -203,4 +250,4 @@ with DAG('crm_olap_etl_dag',
             """
         )
 
-    create_mart_table >> [extract_crm, extract_telemetry] >> transform_load >> optimize_table
+    create_mart_table >> create_table>>generate_queries>>run_insert_queries >> [extract_crm, extract_telemetry] >> transform_load >> optimize_table

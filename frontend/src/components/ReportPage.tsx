@@ -5,6 +5,7 @@ const ReportPage: React.FC = () => {
   const { keycloak, initialized } = useKeycloak();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reportData, setReportData] = useState<string | null>(null);
 
   const downloadReport = async () => {
     if (!keycloak?.token) {
@@ -16,13 +17,15 @@ const ReportPage: React.FC = () => {
       setLoading(true);
       setError(null);
 
-      const response = await fetch(`${process.env.REACT_APP_API_URL}/reports`, {
+      const response = await fetch(`${process.env.REACT_APP_API_URL}/reports/me`, {
         headers: {
           'Authorization': `Bearer ${keycloak.token}`
         }
       });
 
-      
+      const data = await response.json();
+      setReportData(JSON.stringify(data, null, 2));
+
     } catch (err) {
       setError(err instanceof Error ? err.message : 'An error occurred');
     } finally {
@@ -51,7 +54,7 @@ const ReportPage: React.FC = () => {
     <div className="flex flex-col items-center justify-center min-h-screen bg-gray-100">
       <div className="p-8 bg-white rounded-lg shadow-md">
         <h1 className="text-2xl font-bold mb-6">Usage Reports</h1>
-        
+
         <button
           onClick={downloadReport}
           disabled={loading}
@@ -67,6 +70,15 @@ const ReportPage: React.FC = () => {
             {error}
           </div>
         )}
+
+        {reportData && (
+                  <div className="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <h2 className="text-xl font-semibold mb-4">Report Content:</h2>
+                    <div className="whitespace-pre-wrap font-mono text-sm bg-white p-4 rounded border max-h-96 overflow-y-auto">
+                      {reportData}
+                    </div>
+                  </div>
+                )}
       </div>
     </div>
   );

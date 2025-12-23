@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  reports-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: reports-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://airflow:airflow@postgres/olap_database
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - API_RELOAD=True
+    depends_on:
+      - postgres
+    networks:
+      - dag_sample
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  dag_sample:
+    external: true

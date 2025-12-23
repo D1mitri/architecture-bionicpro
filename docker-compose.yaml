@@ -1,6 +1,175 @@
-version: '3.8'
+x-airflow-common: &airflow-common
+  build:
+    context: .
+    dockerfile: Dockerfile
+  environment: &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor #локальный запуск
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__WEBSERVER__SECRET_KEY: 'your_airflow_webserver_sec_key'
+    _PIP_ADDITIONAL_REQUIREMENTS: ''
+    AIRFLOW_INPUT_DIR: '/opt/airflow/dag-inputs'
+    CRM_DB_HOST: ${CRM_DB_HOST:-crm-db}
+    CRM_DB_PORT: ${CRM_DB_PORT:-5432}
+    CRM_DB_NAME: ${CRM_DB_NAME:-crm_database}
+    CRM_DB_USER: ${CRM_DB_USER:-crm_user}
+    CRM_DB_PASSWORD: ${CRM_DB_PASSWORD:-crm_password}
+    OLAP_DB_HOST: ${OLAP_DB_HOST:-olap-db}
+    OLAP_DB_PORT: ${OLAP_DB_PORT:-5433}
+    OLAP_DB_NAME: ${OLAP_DB_NAME:-olap_database}
+    OLAP_DB_USER: ${OLAP_DB_USER:-olap_user}
+    OLAP_DB_PASSWORD: ${OLAP_DB_PASSWORD:-olap_password}
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./dags/sql:/opt/airflow/dags/sql
+    - ./requirements.txt:/opt/airflow/requirements.txt
+    - ./data:/opt/airflow/sample_files
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on: &airflow-common-depends-on
+    postgres:
+      condition: service_healthy
+  networks:
+    - dag_sample
 
 services:
+  postgres:
+    image: postgres:16.0
+    volumes:
+      - ./db/init-db.sql:/docker-entrypoint-initdb.d/db.sql
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+      HOSTNAME: postgres
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - pg_isready
+        - -U
+        - airflow
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+    networks:
+      - dag_sample
+
+  airflow-webserver:
+    <<: *airflow-common
+
+    ports:
+      - "8081:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    command: webserver
+    networks:
+      - dag_sample
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  airflow-scheduler:
+    <<: *airflow-common
+    networks:
+      - dag_sample
+    command: scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-webserver:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/health || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  airflow-triggerer:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    networks:
+      - dag_sample
+    command: bash -c "airflow triggerer"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - airflow jobs check --job-type TriggererJob --hostname "${HOSTNAME}"
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+
+  airflow-cli:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dag_sample
+    profiles:
+      - debug
+    command:
+      - bash
+      - -c
+      - airflow
+
+  airflow-init:
+    <<: *airflow-common
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: >
+      bash -c " airflow db init && airflow users create \ --username admin \ --firstname admin \ --lastname admin \ --role Admin \ --email admin@sample.ru \ --password admin 
+      
+      "
+    networks:
+      - dag_sample
+
+  reports-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: reports-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://airflow:airflow@postgres/olap_database
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - KEYCLOAK_URL=${KEYCLOAK_URL:-http://keycloak:8080}
+      - KEYCLOAK_REALM=${KEYCLOAK_REALM:-reports-realm}
+      - KEYCLOAK_CLIENT_ID=${KEYCLOAK_CLIENT_ID:-reports-frontend}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dag_sample
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
   keycloak_db:
     image: postgres:14
     environment:
@@ -20,7 +189,7 @@ services:
       KC_DB_URL: jdbc:postgresql://keycloak_db:5432/keycloak_db
       KC_DB_USERNAME: keycloak_user
       KC_DB_PASSWORD: keycloak_password
-    command: 
+    command:
       - start-dev
       - --import-realm
     volumes:
@@ -40,3 +209,7 @@ services:
       REACT_APP_KEYCLOAK_URL: http://localhost:8080
       REACT_APP_KEYCLOAK_REALM: reports-realm
       REACT_APP_KEYCLOAK_CLIENT_ID: reports-frontend
+
+networks:
+  dag_sample:
+
